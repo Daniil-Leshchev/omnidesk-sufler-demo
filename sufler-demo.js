@@ -38,7 +38,7 @@
   }
 
   function start() {
-    const VERSION = '2026-11-18.5';
+    const VERSION = '2026-11-18.6';
     const LAYOUT_KEY = 'csai_demo_layout';
     const SEND_KEY = 'csai_demo_send_cases';
     const STATE_KEY = 'csai_demo_state';
@@ -512,7 +512,7 @@
         const src = edSource(R.editor);
         D.editor = 'найден: ' + describe(R.editor.el) + ' (' + R.editor.how + ')'
           + (src ? '; хранилище ' + describe(src) : '') + (eds.length > 1 ? '; кандидатов ' + eds.length : '')
-          + (FE.sources.length ? '; не трогаю хранилище: ' + FE.sources.slice(0, 2).join(', ') : '');
+          + (FE.sources.length ? '; не трогаю скрытые textarea рядом: ' + FE.sources.slice(0, 2).join(', ') : '');
       } else {
         D.editor = 'не найден: ' + editorStats();
       }
@@ -584,13 +584,34 @@
       if (!ed || !ed.el) return '';
       return ed.kind === 'ce' ? (ed.el.innerText || '') : (ed.el.value || '');
     }
+    // id редактора Omnidesk (= id его textarea-хранилища) по видимому полю.
+    function omniIdFor(el) {
+      const eds = window.RedactorManager && window.RedactorManager.editors;
+      if (!eds || !el) return null;
+      let id = null;
+      Object.keys(eds).some(k => {
+        let node = null;
+        try { node = eds[k] && typeof eds[k].getEditor === 'function' ? eds[k].getEditor() : null; } catch (e) { node = null; }
+        if (node && node.nodeType !== 1 && typeof node.get === 'function') node = node.get();
+        if (node && node.nodeType === 1 && (node === el || node.contains(el))) { id = k; return true; }
+        return false;
+      });
+      return id;
+    }
+    // Хранилище видимого поля. rx-source-textarea - служебное поле Redactor для режима «HTML-код»,
+    // оно обновляется только при переключении в этот режим, поэтому хранилищем не считается.
     function edSource(ed) {
       if (!ed || ed.kind !== 'ce') return null;
+      const oid = omniIdFor(ed.el);
+      const own = oid ? document.getElementById(oid) : null;
+      if (own && own.tagName === 'TEXTAREA') return own;
       let p = ed.el.parentElement;
       for (let i = 0; p && i < 5; i++, p = p.parentElement) {
-        const tas = Array.prototype.filter.call(p.querySelectorAll('textarea'), t => !t.closest('#info_user_info_panel'));
+        const tas = Array.prototype.filter.call(p.querySelectorAll('textarea'),
+          t => !t.closest('#info_user_info_panel') && !t.classList.contains('rx-source-textarea'));
         if (!tas.length) continue;
-        return tas.find(t => /response|content|reply|message|body|wysiwyg|redactor/i.test(t.id + ' ' + t.name + ' ' + t.className)) || tas[0];
+        return tas.find(t => /response|content|reply|message|body/i.test(t.id + ' ' + t.name))
+          || tas.find(t => /wysiwyg|redactor/i.test(t.className)) || tas[0];
       }
       return null;
     }
@@ -644,14 +665,7 @@
       try {
         const eds = ed && ed.kind === 'ce' && window.RedactorManager && window.RedactorManager.editors;
         if (!eds) return null;
-        let id = null;
-        Object.keys(eds).some(k => {
-          let node = null;
-          try { node = eds[k] && typeof eds[k].getEditor === 'function' ? eds[k].getEditor() : null; } catch (e) { node = null; }
-          if (node && node.nodeType !== 1 && typeof node.get === 'function') node = node.get();
-          if (node && node.nodeType === 1 && (node === ed.el || node.contains(ed.el))) { id = k; return true; }
-          return false;
-        });
+        let id = omniIdFor(ed.el);
         if (!id) {
           const src = edSource(ed);
           if (src && src.id && eds[src.id]) id = src.id;
@@ -832,7 +846,14 @@
       if (src) {
         srcOk = srcHas(src, text);
         if (!srcOk) { await sleep(STABLE_MS); srcOk = srcHas(src, text); }
-        res.srcNote = srcOk ? 'хранилище редактора обновилось ✓' : 'хранилище редактора не обновилось ✗';
+        res.srcNote = (srcOk ? 'хранилище ' + describe(src) + ' обновилось ✓' : 'хранилище ' + describe(src) + ' не обновилось');
+        if (!srcOk && omni) {
+          const h = omniHtml(omni);
+          srcOk = h !== null && srcHas({value: h}, text);
+          res.srcNote += srcOk ? ', но в редакторе Omnidesk текст есть ✓' : ' ✗';
+        } else if (!srcOk) {
+          res.srcNote += ' ✗';
+        }
       }
       res.ok = stays && srcOk;
       if (!res.ok) {
