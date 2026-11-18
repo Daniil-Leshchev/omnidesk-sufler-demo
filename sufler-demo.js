@@ -38,7 +38,7 @@
   }
 
   function start() {
-    const VERSION = '2026-11-18.6';
+    const VERSION = '2026-11-18.7';
     const LAYOUT_KEY = 'csai_demo_layout';
     const SEND_KEY = 'csai_demo_send_cases';
     const STATE_KEY = 'csai_demo_state';
@@ -1205,7 +1205,7 @@ button:disabled{cursor:default}
 @media (prefers-reduced-motion: reduce){*,*::before,*::after{transition-duration:0s!important;animation-duration:0s!important;animation-iteration-count:1!important}}
 `;
     const CSS_CARD = `
-:host{margin:0 0 12px}
+:host{margin:0 0 12px;padding-top:10px}
 .hc{background:#232323;border:1px solid var(--accent-line);border-radius:6px;box-shadow:0 0 0 3px rgba(138,146,255,.06)}
 .float .hc{box-shadow:0 12px 32px rgba(0,0,0,.55)}
 .hc-top{display:flex;align-items:center;gap:6px;padding:8px 6px 6px 10px;cursor:pointer;user-select:none}
@@ -1351,6 +1351,17 @@ button:disabled{cursor:default}
     let stripHost = null, stripRoot = null, stripWrap = null;
     const M = {cardParent: null, cardFloat: false, stripParent: null, stripLight: false};
     // Фон под полосой: на светлой теме Omnidesk полосу перекрашиваем, иначе текст не читается.
+    // Светлая тема: тёмный текст в поле ответа. Фон надёжнее не брать - под полосой бывают прозрачные и тёмные слои.
+    function pageIsLight(near) {
+      try {
+        const el = R.editor && R.editor.el;
+        if (el && el.isConnected) {
+          const m = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)/.exec(getComputedStyle(el).color || '');
+          if (m) return (0.2126 * m[1] + 0.7152 * m[2] + 0.0722 * m[3]) / 255 < 0.5;
+        }
+      } catch (e) { /* ниже по фону */ }
+      return near ? onLightBg(near) : false;
+    }
     function onLightBg(el) {
       for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
         const m = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)/.exec(getComputedStyle(n).backgroundColor || '');
@@ -1686,6 +1697,7 @@ button:disabled{cursor:default}
           h('button', {class: 'btn xs primary', type: 'button', 'data-act': 'send', title: 'Отправить клиенту'}, icon('send'), 'Отправить'),
           h('button', {class: 'btn xs', type: 'button', 'data-act': 'edit', title: 'Вставить в поле ответа'}, icon('pencil'), 'Изменить')];
       }
+      M.stripLight = pageIsLight(M.stripParent);
       stripWrap.className = 'strip ' + cls + (M.stripLight ? ' on-light' : '');
       setKids(stripWrap, h('div', {class: 'sl'}, kids));
     }
@@ -1975,7 +1987,7 @@ button:disabled{cursor:default}
       if (M.stripParent && !placed) noteRemount('полоса пропала со страницы');
       R.composer.parentNode.insertBefore(stripHost, R.composer);
       M.stripParent = R.composer.parentNode;
-      M.stripLight = onLightBg(M.stripParent);
+      M.stripLight = pageIsLight(M.stripParent);
       D.strip = 'перед ' + describe(R.composer);
       resolved('strip', 'полоса вставлена');
       const sw = stripHost.getBoundingClientRect().width;
