@@ -38,7 +38,7 @@
   }
 
   function start() {
-    const VERSION = '2026-11-18.3';
+    const VERSION = '2026-11-18.4';
     const LAYOUT_KEY = 'csai_demo_layout';
     const SEND_KEY = 'csai_demo_send_cases';
     const STATE_KEY = 'csai_demo_state';
@@ -527,7 +527,11 @@
       const libs = ['$R', 'RedactorX', 'Redactor', 'tinymce', 'CKEDITOR', 'Jodit', 'Quill', 'FroalaEditor', 'Trumbowyg']
         .filter(n => { try { return typeof window[n] !== 'undefined'; } catch (e) { return false; } });
       if (window.jQuery && window.jQuery.fn && window.jQuery.fn.redactor) libs.push('jQuery.fn.redactor');
-      D.redactor = libs.length ? 'на странице есть: ' + libs.join(', ') : 'известных объектов редакторов нет';
+      const omni = R.editor ? omniEditor(R.editor) : null;
+      D.redactor = (omni ? 'Omnidesk: редактор «' + omni.id + '» в RedactorManager, вставка через '
+        + (typeof window.InsertRedactorHtml === 'function' ? 'InsertRedactorHtml' : 'editor.setContent')
+        : 'RedactorManager Omnidesk не найден - вставка имитацией ввода')
+        + (libs.length ? ' · есть: ' + libs.join(', ') : '');
       if ((R.editor && R.editor.el) !== prevEd || (R.send && R.send.el) !== prevSend) {
         log('поле ответа: ' + (R.editor ? describe(R.editor.el) : 'нет') + ' · кнопка: ' + (R.send ? describe(R.send.el) : 'нет'));
       }
@@ -588,6 +592,10 @@
       try { el.focus({preventScroll: true}); } catch (e) { el.focus(); }
     }
     function caretToEnd(ed) {
+      const omni = omniEditor(ed);
+      if (omni && typeof omni.editor.focusEditor === 'function') {
+        try { omni.editor.focusEditor({position: 'end'}); return; } catch (e) { /* ниже обычный путь */ }
+      }
       try {
         if (ed.kind === 'ce') {
           const r = document.createRange();
@@ -603,6 +611,48 @@
       } catch (e) { /* не критично */ }
     }
     const STABLE_MS = 600;
+    const escHtml = t => String(t).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+    // Omnidesk держит редакторы ответа (Redactor 4) в RedactorManager.editors по id textarea-хранилища и вставляет
+    // шаблоны через InsertRedactorHtml(id, html, withPre, clearPrevHtml). Этим путём редактор текст точно видит.
+    // SetRedactorCode не подходит: дописывает к тому, что уже есть в поле.
+    function omniEditor(ed) {
+      try {
+        const eds = ed && ed.kind === 'ce' && window.RedactorManager && window.RedactorManager.editors;
+        if (!eds) return null;
+        let id = null;
+        Object.keys(eds).some(k => {
+          let node = null;
+          try { node = eds[k] && typeof eds[k].getEditor === 'function' ? eds[k].getEditor() : null; } catch (e) { node = null; }
+          if (node && node.nodeType !== 1 && typeof node.get === 'function') node = node.get();
+          if (node && node.nodeType === 1 && (node === ed.el || node.contains(ed.el))) { id = k; return true; }
+          return false;
+        });
+        if (!id) {
+          const src = edSource(ed);
+          if (src && src.id && eds[src.id]) id = src.id;
+        }
+        const editor = id ? eds[id] : null;
+        return editor && typeof editor.setContent === 'function' ? {id, editor} : null;
+      } catch (e) {
+        return null;
+      }
+    }
+    function omniSet(o, html) {
+      if (typeof window.InsertRedactorHtml === 'function') {
+        window.InsertRedactorHtml(o.id, html, true, true);
+        return 'InsertRedactorHtml';
+      }
+      o.editor.setContent(html);
+      return 'editor.setContent';
+    }
+    function omniHtml(o) {
+      try {
+        if (typeof window.GetRedactorHtml === 'function') return window.GetRedactorHtml(o.editor);
+        return o.editor.getContent('html', {tidy: false});
+      } catch (e) {
+        return null;
+      }
+    }
     // Кадр отрисовки или 50 мс, что раньше: в фоновой вкладке requestAnimationFrame не приходит.
     function nextFrame() {
       return new Promise(res => {
@@ -694,9 +744,29 @@
         if (!res.ok) { steps.push('через ' + STABLE_MS + ' мс текста в поле нет ✗'); res.hint = 'Поставьте курсор в поле ответа и нажмите кнопку ещё раз.'; }
         return res;
       }
-      const focused = await activateEditor(el);
-      res.focus = focused ? 'фокус в поле' : 'фокус не встал (' + describe(deepActive()) + ')';
       const useHtml = html !== undefined && html !== null;
+      let stays = false;
+      let focused = true;
+      const omni = omniEditor(ed);
+      if (omni) {
+        try {
+          steps.push('Omnidesk ' + omniSet(omni, useHtml ? (html || '') : (text ? '<p>' + escHtml(text) + '</p>' : '')) + '(«' + omni.id + '»)');
+          res.focus = 'через функцию Omnidesk';
+          await sleep(STABLE_MS / 2);
+          if (!ceHas(el, text)) steps.push('текста нет');
+          else {
+            await sleep(STABLE_MS / 2);
+            if (ceHas(el, text) && el.isConnected) stays = true;
+            else steps.push('редактор откатил');
+          }
+        } catch (e) {
+          steps.push('Omnidesk: ' + e.message);
+        }
+      }
+      if (!stays) {
+        focused = await activateEditor(el);
+        res.focus = (omni ? 'функция Omnidesk не помогла, ' : '') + (focused ? 'фокус в поле' : 'фокус не встал (' + describe(deepActive()) + ')');
+      }
       // Способы по очереди: после каждого ждём - редактор может откатить чужую правку не сразу.
       const methods = [
         ['execCommand', () => {
@@ -718,7 +788,6 @@
           } catch (e) { return 'запись в DOM: ' + e.message; }
         }],
       ];
-      let stays = false;
       for (let m = 0; m < methods.length && !stays; m++) {
         if (methods[m][0] === 'paste' && text === '') continue;
         if (m > 0) { focusEl(el); await nextFrame(); }
@@ -751,7 +820,9 @@
       return t !== '' && t !== norm(DRAFT_TEXT);
     }
     function snapshot(ed) {
-      return {kind: ed.kind, text: edRead(ed), html: ed.kind === 'ce' ? ed.el.innerHTML : null};
+      const omni = omniEditor(ed);
+      const omniH = omni ? omniHtml(omni) : null;
+      return {kind: ed.kind, text: edRead(ed), html: ed.kind === 'ce' ? (omniH !== null ? omniH : ed.el.innerHTML) : null};
     }
     function editorEmptyNow() {
       const ed = liveEditor();
