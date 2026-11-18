@@ -38,7 +38,7 @@
   }
 
   function start() {
-    const VERSION = '2026-11-18.1';
+    const VERSION = '2026-11-18.2';
     const LAYOUT_KEY = 'csai_demo_layout';
     const SEND_KEY = 'csai_demo_send_cases';
     const STATE_KEY = 'csai_demo_state';
@@ -369,12 +369,13 @@
     }
 
     const SEND_RE = /^отправить(\s*\(.{0,24}\))?$/i;
-    const FS = {hidden: 0, similar: []};
+    const FS = {hidden: 0, hiddenEls: [], similar: []};
     function noteSimilar(t) {
       if (/отправ/i.test(t) && FS.similar.length < 4 && FS.similar.indexOf(t) < 0) FS.similar.push(t);
     }
     function findSendButtons() {
       FS.hidden = 0;
+      FS.hiddenEls = [];
       FS.similar = [];
       const out = [];
       const nodes = document.querySelectorAll('button, a, input[type="submit"], input[type="button"], [role="button"]');
@@ -384,7 +385,7 @@
         if (t.length > 40) continue;
         // Похожие подписи - только у кнопок: в ссылках и тексте ленты бывают слова клиента.
         if (!SEND_RE.test(t)) { if (el.tagName !== 'A') noteSimilar(t); continue; }
-        if (!visible(el)) { FS.hidden++; continue; }
+        if (!visible(el)) { FS.hidden++; FS.hiddenEls.push({el, how: 'по подписи «' + t + '»'}); continue; }
         out.push({el, how: 'по подписи «' + t + '»'});
       }
       if (out.length) return out;
@@ -393,7 +394,11 @@
         const el = more[i];
         const t = ownText(el);
         if (!t || t.length > 40 || !SEND_RE.test(t)) continue;
-        if (!visible(el)) { FS.hidden++; continue; }
+        if (!visible(el)) {
+          FS.hidden++;
+          FS.hiddenEls.push({el: el.closest('button, a, [role="button"], [onclick]') || el, how: 'по подписи «' + t + '» у ' + el.tagName.toLowerCase()});
+          continue;
+        }
         const target = el.closest('button, a, [role="button"], [onclick]') || el;
         out.push({el: target, how: 'по подписи «' + t + '» у ' + el.tagName.toLowerCase()});
       }
@@ -406,14 +411,40 @@
         + '; искали button, a, input, [role=button], затем span, div, label';
     }
     const EDITOR_KNOWN = '.redactor-in, .redactor-editor, .redactor_editor, .redactor-layer, .ql-editor, .ProseMirror, .note-editable, .fr-element';
-    const FE = {total: 0, readonly: 0, nested: 0, hidden: 0, panel: 0, narrow: 0};
+    const FE = {total: 0, readonly: 0, nested: 0, hidden: 0, panel: 0, narrow: 0, source: 0, sources: []};
+    const CE_SEL = '[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]';
+    // Визуальный редактор (Redactor и т.п.) держит текст в textarea рядом с собой. Писать надо в видимый
+    // contenteditable: обратно из textarea редактор текст не забирает и при отправке перезапишет его.
+    function nearVisibleCe(ta) {
+      let p = ta.parentElement;
+      for (let i = 0; p && i < 3; i++, p = p.parentElement) {
+        const ces = p.querySelectorAll(CE_SEL);
+        for (let j = 0; j < ces.length; j++) {
+          const ce = ces[j];
+          if (!ce.closest('#info_user_info_panel') && visible(ce) && ce.getBoundingClientRect().width >= 120) return ce;
+        }
+      }
+      return null;
+    }
+    // Видна ли textarea на самом деле: в её центре на экране - она сама, а не то, что её закрывает или обрезает.
+    function hitTestable(el) {
+      const r = el.getBoundingClientRect();
+      const x = r.left + r.width / 2, y = r.top + Math.min(r.height / 2, 20);
+      if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return false;
+      const hit = document.elementFromPoint(x, y);
+      return !!hit && (hit === el || el.contains(hit));
+    }
+    function isEditorStore(ta) {
+      return !ta.closest('#info_user_info_panel') && !hitTestable(ta) && !!nearVisibleCe(ta);
+    }
     function findEditors() {
-      Object.keys(FE).forEach(k => { FE[k] = 0; });
+      Object.keys(FE).forEach(k => { FE[k] = k === 'sources' ? [] : 0; });
       const out = [];
-      const nodes = document.querySelectorAll('textarea, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]');
+      const nodes = document.querySelectorAll('textarea, ' + CE_SEL);
       FE.total = nodes.length;
       for (let i = 0; i < nodes.length; i++) {
         const el = nodes[i];
+        if (el.tagName === 'TEXTAREA' && isEditorStore(el)) { FE.source++; FE.sources.push(describe(el)); continue; }
         if (el.readOnly || el.disabled) { FE.readonly++; continue; }
         if (el.tagName !== 'TEXTAREA' && el.parentElement && el.parentElement.closest('[contenteditable="true"], [contenteditable=""]')) { FE.nested++; continue; }
         if (!visible(el)) { FE.hidden++; continue; }
@@ -433,7 +464,7 @@
     function editorStats() {
       return 'textarea и contenteditable на странице ' + FE.total
         + (FE.total ? ': скрытых ' + FE.hidden + ', только чтение ' + FE.readonly + ', в правой колонке ' + FE.panel
-          + ', уже 120 px ' + FE.narrow + ', вложенных ' + FE.nested : '');
+          + ', уже 120 px ' + FE.narrow + ', вложенных ' + FE.nested + ', хранилищ визуального редактора ' + FE.source : '');
     }
     function composerOf(editorEl, sendEl) {
       const edH = editorEl.getBoundingClientRect().height;
@@ -471,22 +502,32 @@
       const prevSend = R.send && R.send.el;
       R.editor = best ? best.editor : null;
       R.send = best ? best.send : null;
+      // Omnidesk показывает «ОТПРАВИТЬ» только когда в поле есть текст: до вставки берём скрытую кнопку, ближайшую к полю.
+      if (!R.send && FS.hiddenEls.length) {
+        const near = R.editor ? FS.hiddenEls.slice().sort((a, b) => treeDist(a.el, R.editor.el) - treeDist(b.el, R.editor.el))[0] : FS.hiddenEls[0];
+        R.send = {el: near.el, how: near.how, hidden: true};
+      }
       R.composer = R.editor ? composerOf(R.editor.el, R.send && R.send.el) : null;
       if (R.editor) {
         const src = edSource(R.editor);
         D.editor = 'найден: ' + describe(R.editor.el) + ' (' + R.editor.how + ')'
-          + (src ? '; скрытое поле ' + describe(src) : '') + (eds.length > 1 ? '; кандидатов ' + eds.length : '');
+          + (src ? '; хранилище ' + describe(src) : '') + (eds.length > 1 ? '; кандидатов ' + eds.length : '')
+          + (FE.sources.length ? '; не трогаю хранилище: ' + FE.sources.slice(0, 2).join(', ') : '');
       } else {
         D.editor = 'не найден: ' + editorStats();
       }
-      if (R.send) {
+      if (R.send && R.send.hidden) {
+        D.send = 'найдена, сейчас скрыта: ' + describe(R.send.el) + ' ' + R.send.how + ' - Omnidesk покажет её, когда в поле будет текст';
+      } else if (R.send) {
         D.send = 'найдена: ' + describe(R.send.el) + ' ' + R.send.how + (isDisabled(R.send.el) ? ', сейчас неактивна' : ', активна')
           + (sends.length > 1 ? '; кандидатов ' + sends.length : '');
       } else {
         D.send = 'не найдена: ' + sendStats();
       }
-      D.redactor = (typeof window.$R === 'function' ? '$R (Redactor 3) есть' : '$R нет')
-        + ' · ' + (window.jQuery && window.jQuery.fn && window.jQuery.fn.redactor ? 'jQuery.fn.redactor есть' : 'jQuery.fn.redactor нет');
+      const libs = ['$R', 'RedactorX', 'Redactor', 'tinymce', 'CKEDITOR', 'Jodit', 'Quill', 'FroalaEditor', 'Trumbowyg']
+        .filter(n => { try { return typeof window[n] !== 'undefined'; } catch (e) { return false; } });
+      if (window.jQuery && window.jQuery.fn && window.jQuery.fn.redactor) libs.push('jQuery.fn.redactor');
+      D.redactor = libs.length ? 'на странице есть: ' + libs.join(', ') : 'известных объектов редакторов нет';
       if ((R.editor && R.editor.el) !== prevEd || (R.send && R.send.el) !== prevSend) {
         log('поле ответа: ' + (R.editor ? describe(R.editor.el) : 'нет') + ' · кнопка: ' + (R.send ? describe(R.send.el) : 'нет'));
       }
@@ -505,7 +546,7 @@
       return R.editor;
     }
     function liveSend() {
-      if (!R.send || !R.send.el.isConnected || !visible(R.send.el)) refindReply(true);
+      if (!R.send || R.send.hidden || !R.send.el.isConnected || !visible(R.send.el)) refindReply(true);
       return R.send;
     }
 
@@ -516,10 +557,12 @@
     }
     function edSource(ed) {
       if (!ed || ed.kind !== 'ce') return null;
-      const box = ed.el.closest('.redactor-box, .redactor_box') || ed.el.parentElement;
-      if (!box) return null;
-      const tas = box.querySelectorAll('textarea');
-      for (let i = 0; i < tas.length; i++) if (!visible(tas[i])) return tas[i];
+      let p = ed.el.parentElement;
+      for (let i = 0; p && i < 5; i++, p = p.parentElement) {
+        const tas = Array.prototype.filter.call(p.querySelectorAll('textarea'), t => !t.closest('#info_user_info_panel'));
+        if (!tas.length) continue;
+        return tas.find(t => /response|content|reply|message|body|wysiwyg|redactor/i.test(t.id + ' ' + t.name + ' ' + t.className)) || tas[0];
+      }
       return null;
     }
     function nativeSet(el, v) {
@@ -655,7 +698,7 @@
     function doInsert(ed, label) {
       if (S.phase !== 'inserted' || !S.prev) S.prev = snapshot(ed);
       const sendBtn = R.send && R.send.el;
-      const wasDisabled = sendBtn ? isDisabled(sendBtn) : null;
+      const wasDisabled = sendBtn ? isDisabled(sendBtn) || !visible(sendBtn) : null;
       const insertAt = Date.now();
       const r = edWrite(ed, DRAFT_TEXT);
       D.insert = hhmmss() + ' · ' + label + ' · ' + describe(ed.el) + ' · ' + (r.steps.join(' → ') || 'без шагов')
@@ -671,10 +714,12 @@
       if (sendBtn && wasDisabled) {
         setTimeout(() => {
           // Скрипт уже нажал «Отправить» и поле очистилось - неактивная кнопка тут норма.
-          if (!sendBtn.isConnected || S.clickedAt >= insertAt) return;
-          const now = isDisabled(sendBtn);
-          D.insert += now ? ' · кнопка «Отправить» осталась неактивной ✗' : ' · кнопка «Отправить» стала активной ✓';
-          if (now) warn('после вставки кнопка «Отправить» ' + describe(sendBtn) + ' осталась неактивной - редактор, похоже, не увидел текст');
+          if (S.clickedAt >= insertAt) return;
+          let b = sendBtn;
+          if (!b.isConnected || !visible(b)) { refindReply(true); if (R.send && !R.send.hidden) b = R.send.el; }
+          const now = !b.isConnected || !visible(b) || isDisabled(b);
+          D.insert += now ? ' · кнопка «Отправить» осталась скрытой или неактивной ✗' : ' · кнопка «Отправить» появилась и активна ✓';
+          if (now) warn('после вставки кнопка «Отправить» ' + describe(b) + ' осталась скрытой или неактивной - редактор, похоже, не увидел текст');
           renderDiag();
         }, 300);
       }
@@ -744,18 +789,18 @@
       let btn = null;
       for (let i = 0; i < 15; i++) {
         const s = liveSend();
-        if (s && !isDisabled(s.el)) { btn = s; break; }
+        if (s && !s.hidden && visible(s.el) && !isDisabled(s.el)) { btn = s; break; }
         await sleep(100);
         if (tok !== S.tok) return;
       }
       if (!btn) {
         const s = R.send;
+        const why = !s ? 'не найдена' : (s.hidden || !visible(s.el) ? 'не появилась' : 'неактивна');
         S.phase = 'inserted';
         S.insertedFor = MSG_TIME;
-        S.notice = {cls: 'warn', title: s ? 'Кнопка «Отправить» неактивна' : 'Кнопка «Отправить» не найдена',
-          text: 'Текст вставлен. Отправьте сами кнопкой Omnidesk.'};
-        D.sendRes = hhmmss() + ' · не нажата: ' + (s ? describe(s.el) + ' неактивна 1,5 с' : 'кнопки нет');
-        warn('«Отправить»: штатную кнопку не нажимаю - ' + (s ? describe(s.el) + ' неактивна 1,5 с после вставки' : 'кнопка не найдена - ' + sendStats()));
+        S.notice = {cls: 'warn', title: 'Кнопка «Отправить» ' + why, text: 'Текст вставлен. Отправьте сами кнопкой Omnidesk.'};
+        D.sendRes = hhmmss() + ' · не нажата: ' + (s ? describe(s.el) + ' ' + why + ' за 1,5 с' : 'кнопки нет');
+        warn('«Отправить»: штатную кнопку не нажимаю - ' + (s ? describe(s.el) + ' ' + why + ' за 1,5 с после вставки' : 'кнопка не найдена - ' + sendStats()));
         render();
         return;
       }
@@ -1056,6 +1101,15 @@ button:disabled{cursor:default}
 .strip.warn{background:var(--warn-bg);border-color:var(--warn-line);color:var(--warn)}
 .strip.bad{background:var(--bad-bg);border-color:var(--bad-line);color:var(--bad)}
 .strip.wait{background:#222;border-color:#333;color:#c8c8c8}
+.strip.on-light.ready,.strip.on-light.guard{background:#eef0ff;border-color:#b9bdf5;color:#33378f}
+.strip.on-light .dim{color:#55597a}
+.strip.on-light.ok{background:#e8f7ee;border-color:#9fd8b5;color:#1b7340}
+.strip.on-light.warn{background:#fff5d9;border-color:#e8cd82;color:#7d5900}
+.strip.on-light.bad{background:#fdeceb;border-color:#f0b0a9;color:#a1261a}
+.strip.on-light.wait{background:#f1f1f1;border-color:#dadada;color:#555}
+.strip.on-light .btn{background:#fff;border-color:#c8c8c8;color:#222}
+.strip.on-light .btn:hover:not(:disabled){background:#f0f0f0}
+.strip.on-light .btn.primary{background:var(--accent-btn);border-color:var(--accent-btn);color:#fff}
 `;
     function applyCss(root, css) {
       try {
@@ -1075,7 +1129,16 @@ button:disabled{cursor:default}
     /* ---------- карточка ---------- */
     let cardHost = null, cardRoot = null, cardWrap = null, cardEls = null;
     let stripHost = null, stripRoot = null, stripWrap = null;
-    const M = {cardParent: null, cardFloat: false, stripParent: null};
+    const M = {cardParent: null, cardFloat: false, stripParent: null, stripLight: false};
+    // Фон под полосой: на светлой теме Omnidesk полосу перекрашиваем, иначе текст не читается.
+    function onLightBg(el) {
+      for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+        const m = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)/.exec(getComputedStyle(n).backgroundColor || '');
+        if (!m || (m[4] !== undefined && Number(m[4]) < 0.5)) continue;
+        return (0.2126 * m[1] + 0.7152 * m[2] + 0.0722 * m[3]) / 255 > 0.6;
+      }
+      return false;
+    }
 
     function makeHost(tag) {
       const host = document.createElement(tag);
@@ -1395,7 +1458,7 @@ button:disabled{cursor:default}
           h('button', {class: 'btn xs primary', type: 'button', 'data-act': 'send', title: 'Отправить клиенту'}, icon('send'), 'Отправить'),
           h('button', {class: 'btn xs', type: 'button', 'data-act': 'edit', title: 'Вставить в поле ответа'}, icon('pencil'), 'Изменить')];
       }
-      stripWrap.className = 'strip ' + cls;
+      stripWrap.className = 'strip ' + cls + (M.stripLight ? ' on-light' : '');
       setKids(stripWrap, h('div', {class: 'sl'}, kids));
     }
 
@@ -1683,6 +1746,7 @@ button:disabled{cursor:default}
       if (M.stripParent && !placed) noteRemount('полоса пропала со страницы');
       R.composer.parentNode.insertBefore(stripHost, R.composer);
       M.stripParent = R.composer.parentNode;
+      M.stripLight = onLightBg(M.stripParent);
       D.strip = 'перед ' + describe(R.composer);
       resolved('strip', 'полоса вставлена');
       const sw = stripHost.getBoundingClientRect().width;
