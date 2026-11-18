@@ -38,7 +38,7 @@
   }
 
   function start() {
-    const VERSION = '2026-11-18.4';
+    const VERSION = '2026-11-18.5';
     const LAYOUT_KEY = 'csai_demo_layout';
     const SEND_KEY = 'csai_demo_send_cases';
     const STATE_KEY = 'csai_demo_state';
@@ -500,7 +500,7 @@
       }
       const prevEd = R.editor && R.editor.el;
       const prevSend = R.send && R.send.el;
-      R.editor = best ? best.editor : null;
+      R.editor = upgradeEditor(best ? best.editor : null);
       R.send = best ? best.send : null;
       // Omnidesk показывает «ОТПРАВИТЬ» только когда в поле есть текст: до вставки берём скрытую кнопку, ближайшую к полю.
       if (!R.send && FS.hiddenEls.length) {
@@ -545,8 +545,33 @@
         resolved('pair', 'поле ответа и кнопка «Отправить» рядом в разметке');
       }
     }
+    // Redactor Omnidesk создаётся после загрузки страницы: textarea, найденная при старте, потом становится его хранилищем.
+    // Если у textarea есть редактор Omnidesk или рядом появилось видимое поле - работаем с видимым полем.
+    function omniNodeFor(id) {
+      const eds = id && window.RedactorManager && window.RedactorManager.editors;
+      const e = eds && eds[id];
+      let node = null;
+      try { node = e && typeof e.getEditor === 'function' ? e.getEditor() : null; } catch (err) { node = null; }
+      if (node && node.nodeType !== 1 && typeof node.get === 'function') node = node.get();
+      return node && node.nodeType === 1 && visible(node) ? node : null;
+    }
+    function upgradeEditor(cand) {
+      if (!cand || cand.kind !== 'textarea') return cand;
+      const node = omniNodeFor(cand.el.id);
+      if (node) return {el: node, kind: 'ce', score: cand.score, area: cand.area, how: 'редактор Omnidesk для textarea#' + cand.el.id};
+      if (isEditorStore(cand.el)) {
+        const ce = nearVisibleCe(cand.el);
+        if (ce) return {el: ce, kind: 'ce', score: cand.score, area: cand.area, how: 'видимое поле рядом с ' + describe(cand.el)};
+      }
+      return cand;
+    }
+    function editorStale() {
+      const ed = R.editor;
+      if (!ed || !ed.el.isConnected) return true;
+      return ed.kind === 'textarea' && (!!omniNodeFor(ed.el.id) || isEditorStore(ed.el));
+    }
     function liveEditor() {
-      if (!R.editor || !R.editor.el.isConnected) refindReply(true);
+      if (editorStale()) refindReply(true);
       return R.editor;
     }
     function liveSend() {
@@ -832,6 +857,7 @@
 
     /* ---------- действия ---------- */
     function needEditor() {
+      refindReply(true);
       const ed = liveEditor();
       if (!ed) {
         S.notice = {cls: 'bad', title: 'Поле ответа не найдено', text: 'Текст не вставлен. Подробности - в «Диагностике».'};
@@ -1943,7 +1969,7 @@ button:disabled{cursor:default}
       if (D.pausedUntil > Date.now() && !force) return;
       safe(() => ensureCard(fromPoll, force), 'ensureCard');
       safe(() => ensureStrip(fromPoll, force), 'ensureStrip');
-      if (fromPoll && !R.editor && Date.now() - R.findAt > 3000) refindReply(true);
+      if (fromPoll && Date.now() - R.findAt > 3000 && (!R.editor || editorStale())) refindReply(true);
     }
 
     let moTimer = 0;
