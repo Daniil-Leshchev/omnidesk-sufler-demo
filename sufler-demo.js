@@ -38,7 +38,7 @@
   }
 
   function start() {
-    const VERSION = '2026-11-18.7';
+    const VERSION = '2026-11-18.8';
     const LAYOUT_KEY = 'csai_demo_layout';
     const SEND_KEY = 'csai_demo_send_cases';
     const STATE_KEY = 'csai_demo_state';
@@ -1308,6 +1308,52 @@ button:disabled{cursor:default}
 .fb-done>.ico{color:var(--ok);margin-top:1px;width:13px;height:13px;stroke-width:2.2}
 .fb-done span{flex:1}
 `;
+    // Светлая тема карточки: тёмная - основная (U1), здесь только то, что отличается.
+    const CSS_CARD_LIGHT = `
+.wrap.light{color:#2b2b2b;--accent:#5a63de;--accent-soft:rgba(90,99,222,.1);--accent-line:rgba(90,99,222,.45);--accent-ring:rgba(90,99,222,.22);
+  --ok:#1b7f45;--ok-bg:rgba(27,127,69,.1);--ok-line:rgba(27,127,69,.35);
+  --warn:#8a6100;--warn-bg:#fff6dc;--warn-line:#ecd28a;
+  --bad:#b0291c;--bad-bg:#fdecea;--bad-line:#f2b1aa;
+  --wait:#666;--wait-bg:rgba(0,0,0,.06);--link:#1f6fd6}
+.light .hc{background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.light.float .hc{box-shadow:0 12px 32px rgba(0,0,0,.18)}
+.light .hc-tt b,.light .tname,.light .draft-text,.light .fv,.light .why-lead{color:#222}
+.light .hc-tt small,.light .hc-st,.light .draft-foot,.light .fold-s,.light .hint-sm,.light .fb-hint,.light .fk{color:#777}
+.light .mini-t{color:#444}
+.light .hc-tg{color:#888}
+.light .hc-top:hover .hc-tg,.light .tconf:hover,.light .tconf[aria-expanded="true"],.light .flag:hover{background:#f0f0f3}
+.light .tconf{color:#666}
+.light .tconf span{border-bottom-color:#aaa}
+.light .cbd,.light .draft{background:#f7f7fa;border-color:#e2e2e8}
+.light .clist li{color:#333}
+.light .topic-only{color:#666}
+.light .topic-only b{color:#222}
+.light .stages{color:#555}
+.light .skel{border-color:#ddd}
+.light .skel i{background:linear-gradient(90deg,#eee 0%,#f7f7f7 50%,#eee 100%);background-size:200% 100%}
+.light .sub{background:rgba(90,99,222,.12);border-bottom-color:#8a92ff;color:#1d1f4d}
+.light .sub:hover,.light .sub:focus{background:rgba(90,99,222,.22)}
+.light .sent-line span{color:#777}
+.light .fold{border-top-color:#e6e6ea}
+.light .fold-h{color:#333}
+.light .fold-h>.ico{color:#888}
+.light .fv small{color:#888}
+.light .flag{color:#aaa}
+.light .flag:hover{color:#555}
+.light .why{color:#555}
+.light .why b{color:#333}
+.light .fb-done{background:#f3f3f6;color:#333}
+.light .note-row{color:#33378f}
+.light .btn{background:#fff;border-color:#c8c8c8;color:#222}
+.light .btn:hover:not(:disabled){background:#f0f0f0}
+.light .btn.primary{background:var(--accent-btn);border-color:var(--accent-btn);color:#fff}
+.light .btn.primary:hover:not(:disabled){background:var(--accent-btn-h)}
+.light .diag{color:#555}
+.light .diag dt{color:#888}
+.light .diag dd{color:#333}
+.light .diag ol{color:#666;border-top-color:#e6e6ea}
+.light .demo{background:#f2c65c;color:#141414}
+`;
     const CSS_STRIP = `
 :host{margin:0 0 6px}
 .strip{border:1px solid;border-radius:3px;font-size:12.5px;animation:fadeIn .25s ease}
@@ -1349,18 +1395,27 @@ button:disabled{cursor:default}
     /* ---------- карточка ---------- */
     let cardHost = null, cardRoot = null, cardWrap = null, cardEls = null;
     let stripHost = null, stripRoot = null, stripWrap = null;
-    const M = {cardParent: null, cardFloat: false, stripParent: null, stripLight: false};
-    // Фон под полосой: на светлой теме Omnidesk полосу перекрашиваем, иначе текст не читается.
-    // Светлая тема: тёмный текст в поле ответа. Фон надёжнее не брать - под полосой бывают прозрачные и тёмные слои.
-    function pageIsLight(near) {
+    const M = {cardParent: null, cardFloat: false, stripParent: null, stripLight: false, cardLight: null};
+    // Светлая тема Omnidesk узнаётся по тёмному тексту (в поле ответа, в колонке). Фон ненадёжен:
+    // под полосой бывают прозрачные и тёмные слои, поэтому он - только запасной признак.
+    function textIsDark(el) {
       try {
-        const el = R.editor && R.editor.el;
-        if (el && el.isConnected) {
-          const m = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)/.exec(getComputedStyle(el).color || '');
-          if (m) return (0.2126 * m[1] + 0.7152 * m[2] + 0.0722 * m[3]) / 255 < 0.5;
-        }
-      } catch (e) { /* ниже по фону */ }
+        const m = el && el.isConnected ? /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)/.exec(getComputedStyle(el).color || '') : null;
+        return m ? (0.2126 * m[1] + 0.7152 * m[2] + 0.0722 * m[3]) / 255 < 0.5 : null;
+      } catch (e) {
+        return null;
+      }
+    }
+    function pageIsLight(near) {
+      const dark = textIsDark(R.editor && R.editor.el);
+      if (dark !== null) return dark;
       return near ? onLightBg(near) : false;
+    }
+    // Тема карточки - по цвету текста колонки, куда она вставлена («Данные пользователя»).
+    function cardIsLight() {
+      const ref = M.cardFloat || !cardHost || !cardHost.parentElement ? document.body : cardHost.parentElement;
+      const dark = textIsDark(ref);
+      return dark !== null ? dark : pageIsLight(ref);
     }
     function onLightBg(el) {
       for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
@@ -1387,7 +1442,7 @@ button:disabled{cursor:default}
       const m = makeHost('csai-demo-card');
       cardHost = m.host;
       cardRoot = m.root;
-      D.css = applyCss(cardRoot, CSS_BASE + CSS_CARD);
+      D.css = applyCss(cardRoot, CSS_BASE + CSS_CARD + CSS_CARD_LIGHT);
       const full = h('div', {class: 'hc-layer full'});
       const mini = h('div', {class: 'hc-layer mini'});
       const tg = h('button', {class: 'hc-tg', type: 'button', 'aria-label': 'Свернуть подсказку', 'aria-expanded': 'true'}, icon('chevUp'));
@@ -1553,7 +1608,7 @@ button:disabled{cursor:default}
         ['Полоса', wantStrip() ? D.strip : 'не нужна в варианте 1'],
         ['ID Умскул', D.idField],
         ['Редактор API', D.redactor],
-        ['Стили', D.css],
+        ['Стили', D.css + (D.theme ? ' · тема ' + D.theme : '')],
         ['Вставка', D.insert],
         ['Возврат', D.undo],
         ['Нажатие', D.sendRes],
@@ -1650,6 +1705,12 @@ button:disabled{cursor:default}
       const e = cardEls;
       e.card.classList.toggle('collapsed', S.collapsed);
       cardWrap.classList.toggle('float', M.cardFloat);
+      const light = cardIsLight();
+      if (light !== M.cardLight) {
+        M.cardLight = light;
+        D.theme = light ? 'светлая (тёмный текст в колонке)' : 'тёмная';
+      }
+      cardWrap.classList.toggle('light', light);
       setKids(e.full, [icon('spark'), h('div', {class: 'hc-tt'}, h('b', null, 'Подсказка ответа'), h('small', null, 'текст КС · данные платформы')),
         h('span', {class: 'demo', title: 'Демо на тестовых данных'}, 'демо')]);
       setKids(e.mini, [icon('spark'), h('span', {class: 'mini-t'}, miniLine())]);
