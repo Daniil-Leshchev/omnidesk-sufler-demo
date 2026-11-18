@@ -38,7 +38,7 @@
   }
 
   function start() {
-    const VERSION = '2026-11-18.2';
+    const VERSION = '2026-11-18.3';
     const LAYOUT_KEY = 'csai_demo_layout';
     const SEND_KEY = 'csai_demo_send_cases';
     const STATE_KEY = 'csai_demo_state';
@@ -103,8 +103,8 @@
         caseId: null, collapsed: false,
         open: Object.assign({}, OPEN_DEFAULT, {diag: !!keepDiag}),
         mode: 'ready', // ready | noid | rebuilding
-        idBase: null, rebuildHow: '', clickedAt: 0,
-        phase: 'idle', // idle | confirm | inserted | sending | sent
+        idBase: null, rebuildHow: '', clickedAt: 0, busy: false,
+        phase: 'idle', // idle | confirm | inserting | inserted | sending | sent
         confirmFor: null, notice: null, prev: null, insertedFor: null,
         sent: null, bad: null, badOpen: false, flags: {}, tok: 0,
       };
@@ -602,12 +602,81 @@
         }
       } catch (e) { /* не критично */ }
     }
+    const STABLE_MS = 600;
+    // Кадр отрисовки или 50 мс, что раньше: в фоновой вкладке requestAnimationFrame не приходит.
+    function nextFrame() {
+      return new Promise(res => {
+        let done = false;
+        const fin = () => { if (!done) { done = true; res(); } };
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fin);
+        setTimeout(fin, 50);
+      });
+    }
+    function deepActive() {
+      let a = document.activeElement;
+      while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+      return a;
+    }
+    function hasFocusIn(el) {
+      const a = document.activeElement;
+      return !!a && (a === el || el.contains(a));
+    }
+    // Как клик менеджера в поле: часть редакторов включается только от мыши и фокуса, одного focus() им мало.
+    // Фокус с нашей кнопки внутри Shadow DOM снимаем, иначе Safari может оставить выделение у нас.
+    async function activateEditor(el) {
+      try {
+        const own = deepActive();
+        if (own && own !== el && own.getRootNode && own.getRootNode() !== document && typeof own.blur === 'function') own.blur();
+      } catch (e) { /* не критично */ }
+      const r = el.getBoundingClientRect();
+      const opts = {bubbles: true, cancelable: true, composed: true, view: window, button: 0,
+        clientX: r.left + Math.min(24, r.width / 2), clientY: r.top + Math.min(16, r.height / 2)};
+      ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(t => {
+        try {
+          const Ctor = t.indexOf('pointer') === 0 && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+          el.dispatchEvent(new Ctor(t, opts));
+        } catch (e) { /* старый браузер */ }
+      });
+      focusEl(el);
+      await nextFrame();
+      await nextFrame();
+      return hasFocusIn(el);
+    }
+    function selectAllIn(el) {
+      try {
+        const sel = window.getSelection();
+        const r = document.createRange();
+        r.selectNodeContents(el);
+        sel.removeAllRanges();
+        sel.addRange(r);
+      } catch (e) { /* ниже проверка покажет */ }
+    }
+    // Вставка «как из буфера обмена»: визуальные редакторы обрабатывают paste сами и кладут текст в свою модель.
+    function pasteInto(el, text) {
+      try {
+        const dt = new DataTransfer();
+        dt.setData('text/plain', text);
+        const ev = new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true, composed: true});
+        if (!ev.clipboardData || ev.clipboardData.getData('text/plain') !== text) return 'paste: браузер не передал буфер';
+        el.dispatchEvent(ev);
+        return ev.defaultPrevented ? 'paste: редактор обработал' : 'paste: редактор не обработал';
+      } catch (e) {
+        return 'paste: не создалось (' + e.message + ')';
+      }
+    }
+    function ceHas(el, text) { return norm(el.innerText) === norm(text); }
+    function srcHas(src, text) {
+      const plain = norm(String(src.value).replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' '));
+      return text ? plain.indexOf(norm(text).slice(0, 40)) >= 0 : plain === '';
+    }
     // text - что должно оказаться в поле; html - для «Вернуть как было» у contenteditable.
-    function edWrite(ed, text, html) {
+    // ok - текст в поле и через STABLE_MS не откатился, а хранилище редактора (если есть) его тоже получило.
+    async function edWrite(ed, text, html) {
       const el = ed.el;
       const steps = [];
-      focusEl(el);
+      const res = {ok: false, steps, srcNote: '', focus: '', hint: ''};
       if (ed.kind !== 'ce') {
+        focusEl(el);
         try {
           el.select();
           const ok = text === '' ? document.execCommand('delete') : document.execCommand('insertText', false, text);
@@ -618,59 +687,64 @@
           fire(el, 'input');
           steps.push('value + событие input');
         }
-      } else {
-        try {
-          const sel = window.getSelection();
-          const r = document.createRange();
-          r.selectNodeContents(el);
-          sel.removeAllRanges();
-          sel.addRange(r);
-          let ok;
-          if (html !== undefined && html !== null) ok = document.execCommand('insertHTML', false, html || '');
-          else if (text === '') ok = document.execCommand('delete');
-          else ok = document.execCommand('insertText', false, text);
-          if (ok) steps.push('execCommand ' + (html !== undefined && html !== null ? 'insertHTML' : (text === '' ? 'delete' : 'insertText')));
-        } catch (e) { /* ниже запасной путь */ }
-        if (norm(el.innerText) !== norm(text)) {
+        fire(el, 'change');
+        fireKeyup(el);
+        await sleep(STABLE_MS);
+        res.ok = el.isConnected && el.value === text;
+        if (!res.ok) { steps.push('через ' + STABLE_MS + ' мс текста в поле нет ✗'); res.hint = 'Поставьте курсор в поле ответа и нажмите кнопку ещё раз.'; }
+        return res;
+      }
+      const focused = await activateEditor(el);
+      res.focus = focused ? 'фокус в поле' : 'фокус не встал (' + describe(deepActive()) + ')';
+      const useHtml = html !== undefined && html !== null;
+      // Способы по очереди: после каждого ждём - редактор может откатить чужую правку не сразу.
+      const methods = [
+        ['execCommand', () => {
           try {
-            if (html !== undefined && html !== null) el.innerHTML = html;
+            let ok;
+            if (useHtml) ok = document.execCommand('insertHTML', false, html || '');
+            else if (text === '') ok = document.execCommand('delete');
+            else ok = document.execCommand('insertText', false, text);
+            return 'execCommand ' + (useHtml ? 'insertHTML' : (text === '' ? 'delete' : 'insertText')) + (ok ? '' : ' вернул false');
+          } catch (e) { return 'execCommand: ' + e.message; }
+        }],
+        ['paste', () => pasteInto(el, text)],
+        ['dom', () => {
+          try {
+            if (useHtml) el.innerHTML = html;
             else el.textContent = text;
             fire(el, 'input');
-            steps.push('textContent + событие input');
-          } catch (e) {
-            steps.push('запись не удалась: ' + e.message);
-          }
-        }
+            return 'запись в DOM + input';
+          } catch (e) { return 'запись в DOM: ' + e.message; }
+        }],
+      ];
+      let stays = false;
+      for (let m = 0; m < methods.length && !stays; m++) {
+        if (methods[m][0] === 'paste' && text === '') continue;
+        if (m > 0) { focusEl(el); await nextFrame(); }
+        selectAllIn(el);
+        steps.push(methods[m][1]());
+        fire(el, 'change');
+        fireKeyup(el);
+        await sleep(STABLE_MS / 2);
+        if (!ceHas(el, text)) { steps.push('текста нет'); continue; }
+        await sleep(STABLE_MS / 2);
+        if (ceHas(el, text) && el.isConnected) stays = true;
+        else steps.push('редактор откатил');
       }
-      fire(el, 'change');
-      fireKeyup(el);
-      let srcNote = '';
+      if (!stays) steps.push('текст не удержался ✗');
       const src = edSource(ed);
+      let srcOk = true;
       if (src) {
-        const need = norm(text).slice(0, 40);
-        const plain = norm(String(src.value).replace(/<[^>]*>/g, ' '));
-        if (need && plain.indexOf(need) < 0) {
-          nativeSet(src, el.innerHTML);
-          fire(src, 'input');
-          fire(src, 'change');
-          srcNote = 'скрытое поле дописано вручную';
-          const after = norm(String(src.value).replace(/<[^>]*>/g, ' '));
-          if (after.indexOf(need) < 0) {
-            srcNote = 'скрытое поле не обновилось ✗';
-            warn('скрытое поле редактора ' + describe(src) + ' не приняло текст - Omnidesk может отправить старое содержимое');
-          } else {
-            warn('редактор сам не обновил скрытое поле ' + describe(src) + ' - дописано скриптом');
-          }
-        } else if (!need && plain) {
-          nativeSet(src, '');
-          fire(src, 'change');
-          srcNote = 'скрытое поле очищено вручную';
-        } else {
-          srcNote = 'скрытое поле синхронизировал редактор';
-        }
+        srcOk = srcHas(src, text);
+        if (!srcOk) { await sleep(STABLE_MS); srcOk = srcHas(src, text); }
+        res.srcNote = srcOk ? 'хранилище редактора обновилось ✓' : 'хранилище редактора не обновилось ✗';
       }
-      const ok = norm(edRead(ed)) === norm(text);
-      return {ok, steps, srcNote};
+      res.ok = stays && srcOk;
+      if (!res.ok) {
+        res.hint = 'Поставьте курсор в поле ответа и нажмите кнопку ещё раз' + (focused ? '.' : ' - фокус в поле не встал.');
+      }
+      return res;
     }
     function hasForeignText(ed) {
       const t = norm(edRead(ed));
@@ -695,26 +769,27 @@
       }
       return ed;
     }
-    function doInsert(ed, label) {
+    async function doInsert(ed, label) {
       if (S.phase !== 'inserted' || !S.prev) S.prev = snapshot(ed);
       const sendBtn = R.send && R.send.el;
       const wasDisabled = sendBtn ? isDisabled(sendBtn) || !visible(sendBtn) : null;
       const insertAt = Date.now();
-      const r = edWrite(ed, DRAFT_TEXT);
-      D.insert = hhmmss() + ' · ' + label + ' · ' + describe(ed.el) + ' · ' + (r.steps.join(' → ') || 'без шагов')
-        + ' · ' + (r.ok ? 'поле видит текст ✓ (' + norm(edRead(ed)).length + ' знаков)' : 'текст в поле не совпал ✗')
+      const r = await edWrite(ed, DRAFT_TEXT);
+      D.insert = hhmmss() + ' · ' + label + ' · ' + describe(ed.el) + (r.focus ? ' · ' + r.focus : '') + ' · ' + (r.steps.join(' → ') || 'без шагов')
+        + ' · ' + (r.ok ? 'поле видит текст ✓ (' + norm(edRead(ed)).length + ' знаков)' : 'текст в поле не принят ✗')
         + (r.srcNote ? ' · ' + r.srcNote : '');
       if (r.ok) {
-        log('вставка (' + label + '): ок, способ: ' + r.steps.join(' → '));
+        log('вставка (' + label + '): ок, ' + (r.focus ? r.focus + ', ' : '') + 'способ: ' + r.steps.join(' → '));
       } else {
-        warn('вставка (' + label + ') не совпала: ожидалось ' + norm(DRAFT_TEXT).length + ' знаков, в поле '
-          + norm(edRead(ed)).length + '; поле ' + describe(ed.el) + '; способ: ' + (r.steps.join(' → ') || 'ни один не сработал'));
+        warn('вставка (' + label + ') не принята редактором: ожидалось ' + norm(DRAFT_TEXT).length + ' знаков, в поле '
+          + norm(edRead(ed)).length + '; поле ' + describe(ed.el) + (r.focus ? '; ' + r.focus : '') + '; шаги: ' + (r.steps.join(' → ') || 'нет')
+          + (r.srcNote ? '; ' + r.srcNote : ''));
       }
       if (!ed.el.isConnected) warn('поле ответа ' + describe(ed.el) + ' пропало со страницы во время вставки');
-      if (sendBtn && wasDisabled) {
+      if (r.ok && sendBtn && wasDisabled) {
         setTimeout(() => {
-          // Скрипт уже нажал «Отправить» и поле очистилось - неактивная кнопка тут норма.
-          if (S.clickedAt >= insertAt) return;
+          // Скрипт уже нажал «Отправить» или черновика в поле уже нет - состояние кнопки ни о чём не говорит.
+          if (S.clickedAt >= insertAt || !ed.el.isConnected || norm(edRead(ed)) !== norm(DRAFT_TEXT)) return;
           let b = sendBtn;
           if (!b.isConnected || !visible(b)) { refindReply(true); if (R.send && !R.send.hidden) b = R.send.el; }
           const now = !b.isConnected || !visible(b) || isDisabled(b);
@@ -723,11 +798,16 @@
           renderDiag();
         }, 300);
       }
-      return r.ok;
+      return r;
+    }
+    function failedInsert(ed, r) {
+      S.notice = {cls: 'bad', title: 'Редактор не принял текст', text: r.hint || 'Подробности - в «Диагностике».'};
+      S.phase = norm(edRead(ed)) && norm(edRead(ed)) !== norm(S.prev ? S.prev.text : '') ? 'inserted' : 'idle';
+      S.insertedFor = MSG_TIME;
     }
 
-    function actEdit(force) {
-      if (S.mode !== 'ready' || S.phase === 'sending' || S.phase === 'sent') return;
+    async function actEdit(force) {
+      if (S.mode !== 'ready' || S.busy || S.phase === 'sending' || S.phase === 'sent') return;
       S.notice = null;
       const ed = needEditor();
       if (!ed) return;
@@ -737,19 +817,27 @@
         render();
         return;
       }
-      const ok = doInsert(ed, '«Изменить»');
-      if (!ok) {
-        S.notice = {cls: 'bad', title: 'Текст вставился не полностью', text: 'Проверьте поле ответа. Подробности - в «Диагностике».'};
+      const tok = S.tok;
+      S.busy = true;
+      S.confirmFor = null;
+      S.phase = 'inserting';
+      render();
+      let r;
+      try { r = await doInsert(ed, '«Изменить»'); } finally { S.busy = false; }
+      if (tok !== S.tok) return;
+      if (!r.ok) {
+        failedInsert(ed, r);
+        render();
+        return;
       }
       S.phase = 'inserted';
-      S.confirmFor = null;
       S.insertedFor = MSG_TIME;
       caretToEnd(ed);
       render();
     }
 
     async function actSend(force) {
-      if (S.mode !== 'ready' || S.phase === 'sending' || S.phase === 'sent') return;
+      if (S.mode !== 'ready' || S.busy || S.phase === 'sending' || S.phase === 'sent') return;
       S.notice = null;
       const tok = S.tok;
       const ed = needEditor();
@@ -762,12 +850,17 @@
       }
       S.confirmFor = null;
       const allowed = sendAllowed();
-      const ok = doInsert(ed, '«Отправить»');
-      if (!ok) {
-        S.phase = 'inserted';
-        S.notice = {cls: 'bad', title: 'Текст вставился не полностью - отправку не нажимаю', text: 'Проверьте поле ответа.'};
-        D.sendRes = hhmmss() + ' · не нажата: текст в поле не совпал';
-        warn('«Отправить»: штатную кнопку не нажимаю - вставленный текст не совпал с черновиком');
+      S.busy = true;
+      S.phase = 'inserting';
+      render();
+      let ins;
+      try { ins = await doInsert(ed, '«Отправить»'); } finally { S.busy = false; }
+      if (tok !== S.tok) return;
+      if (!ins.ok) {
+        failedInsert(ed, ins);
+        S.notice.title = 'Редактор не принял текст - отправку не нажимаю';
+        D.sendRes = hhmmss() + ' · не нажата: редактор не принял вставленный текст';
+        warn('«Отправить»: штатную кнопку не нажимаю - редактор не принял вставленный текст');
         render();
         return;
       }
@@ -859,7 +952,8 @@
       }, RM ? 0 : 900);
     }
 
-    function actUndo() {
+    async function actUndo() {
+      if (S.busy) return;
       const ed = liveEditor();
       if (!ed || !S.prev) {
         warn('«Вернуть как было»: ' + (!ed ? 'поле ответа не найдено - ' + editorStats() : 'нет сохранённого прежнего текста'));
@@ -868,14 +962,22 @@
         return;
       }
       const p = S.prev;
-      const r = p.kind === 'ce' && ed.kind === 'ce' ? edWrite(ed, p.text, p.html) : edWrite(ed, p.text);
-      D.undo = hhmmss() + ' · ' + (r.steps.join(' → ') || 'без шагов') + ' · '
+      S.busy = true;
+      let r;
+      try { r = p.kind === 'ce' && ed.kind === 'ce' ? await edWrite(ed, p.text, p.html) : await edWrite(ed, p.text); } finally { S.busy = false; }
+      D.undo = hhmmss() + ' · ' + (r.focus ? r.focus + ' · ' : '') + (r.steps.join(' → ') || 'без шагов') + ' · '
         + (r.ok ? 'поле вернулось ✓' : 'поле не совпало с прежним ✗') + (r.srcNote ? ' · ' + r.srcNote : '');
-      if (r.ok) log('возврат поля: ок');
-      else warn('«Вернуть как было»: поле не совпало с прежним (было ' + norm(p.text).length + ' знаков, стало ' + norm(edRead(ed)).length + ')');
-      S.phase = 'idle';
-      S.prev = null;
-      S.notice = null;
+      if (r.ok) {
+        log('возврат поля: ок');
+        S.phase = 'idle';
+        S.prev = null;
+        S.notice = null;
+      } else {
+        // Прежний текст не теряем: «Вернуть как было» можно нажать ещё раз.
+        warn('«Вернуть как было»: поле не совпало с прежним (было ' + norm(p.text).length + ' знаков, стало ' + norm(edRead(ed)).length + ')');
+        S.phase = 'inserted';
+        S.notice = {cls: 'warn', title: 'Поле вернулось не полностью', text: r.hint || 'Проверьте поле ответа.'};
+      }
       render();
     }
 
@@ -1146,6 +1248,10 @@ button:disabled{cursor:default}
       host.style.display = 'block';
       const root = host.attachShadow({mode: 'open'});
       root.addEventListener('click', onUiClick);
+      // Кнопки подсказки не забирают фокус: если курсор стоит в поле ответа, редактор остаётся активным.
+      root.addEventListener('mousedown', e => {
+        if (e.target && e.target.closest && e.target.closest('button')) e.preventDefault();
+      });
       return {host, root};
     }
     function createCard() {
@@ -1182,6 +1288,7 @@ button:disabled{cursor:default}
       if (S.mode === 'rebuilding') return ['wait', 'Готовится'];
       if (S.phase === 'sent') return ['ok', 'Отправлено'];
       if (S.phase === 'sending') return ['wait', 'Отправляю…'];
+      if (S.phase === 'inserting') return ['wait', 'Вставляю…'];
       if (S.phase === 'inserted') return ['acc', 'Вставлено'];
       return ['ok', 'Готов'];
     }
@@ -1190,6 +1297,7 @@ button:disabled{cursor:default}
       if (S.mode === 'rebuilding') return [h('span', {class: 'k t-wait'}, 'Готовится'), ' · ID Умскул найден'];
       if (S.phase === 'sent') return [h('span', {class: 'k t-ok'}, 'Отправлено ' + S.sent.time), ' · ' + S.sent.edit];
       if (S.phase === 'sending') return [h('span', {class: 'k t-wait'}, 'Отправляю…')];
+      if (S.phase === 'inserting') return [h('span', {class: 'k t-wait'}, 'Вставляю…')];
       if (S.phase === 'inserted') return [h('span', {class: 'k t-acc'}, 'Вставлено'), ' · правьте в поле ответа'];
       return [h('span', {class: 'k t-ok'}, 'Готов'), ' · ' + TOPIC.name + ' · ' + CONF_PCT + '%'];
     }
@@ -1248,12 +1356,12 @@ button:disabled{cursor:default}
           : h('button', {class: 'btn sm', type: 'button', 'data-act': 'undo'}, icon('undo'), 'Вернуть как было');
         return h('div', {class: 'note-row'}, icon('pencil'), h('span', null, 'Вставлено - правьте в поле ответа'), undo);
       }
-      const sending = S.phase === 'sending';
+      const sending = S.phase === 'sending' || S.phase === 'inserting';
       const editBtn = h('button', {class: 'btn', type: 'button', 'data-act': 'edit', title: 'Вставить в поле ответа', disabled: sending},
-        icon('pencil'), 'Изменить');
+        S.phase === 'inserting' ? h('i', {class: 'spin'}) : icon('pencil'), S.phase === 'inserting' ? 'Вставляю…' : 'Изменить');
       if (wantStrip()) return h('div', {class: 'actions'}, editBtn);
       const sendBtn = h('button', {class: 'btn primary', type: 'button', 'data-act': 'send', title: 'Отправить клиенту', disabled: sending},
-        sending ? h('i', {class: 'spin'}) : icon('send'), sending ? 'Отправляю…' : 'Отправить');
+        S.phase === 'sending' ? h('i', {class: 'spin'}) : icon('send'), S.phase === 'sending' ? 'Отправляю…' : 'Отправить');
       return h('div', {class: 'actions'}, sendBtn, editBtn);
     }
     function factsFold() {
@@ -1439,18 +1547,20 @@ button:disabled{cursor:default}
         const c = confirmRow(true);
         cls = 'warn';
         kids = [icon('warn'), h('b', null, c.q), h('span', {class: 'sp'}), c.yes, c.no];
-      } else if (S.phase === 'sending') {
+      } else if (S.phase === 'sending' || S.phase === 'inserting') {
         cls = 'wait';
-        kids = [h('i', {class: 'spin'}), h('b', null, 'Отправляю…')];
+        kids = [h('i', {class: 'spin'}), h('b', null, S.phase === 'inserting' ? 'Вставляю…' : 'Отправляю…')];
       } else if (S.phase === 'inserted' && S.notice) {
         cls = S.notice.cls === 'bad' ? 'bad' : 'warn';
-        kids = [icon('warn'), h('b', null, S.notice.title), h('span', {class: 'sp'}), undo()];
+        kids = [icon('warn'), h('b', null, S.notice.title), h('span', {class: 'dim'}, S.notice.text ? '· ' + S.notice.text : ''), h('span', {class: 'sp'}), undo()];
       } else if (S.phase === 'inserted') {
         cls = 'guard';
         kids = [icon('pencil'), h('span', null, 'Вставлен черновик к сообщению ', h('b', null, S.insertedFor || MSG_TIME)), h('span', {class: 'sp'}), undo()];
       } else if (S.notice) {
         cls = S.notice.cls === 'bad' ? 'bad' : 'warn';
-        kids = [icon('stop'), h('b', null, S.notice.title)];
+        kids = [icon('stop'), h('b', null, S.notice.title), h('span', {class: 'dim'}, S.notice.text ? '· ' + S.notice.text : ''), h('span', {class: 'sp'}),
+          h('button', {class: 'btn xs primary', type: 'button', 'data-act': 'send', title: 'Отправить клиенту'}, icon('send'), 'Отправить'),
+          h('button', {class: 'btn xs', type: 'button', 'data-act': 'edit', title: 'Вставить в поле ответа'}, icon('pencil'), 'Изменить')];
       } else {
         cls = 'ready';
         kids = [icon('spark'), h('b', null, 'Подсказка готова'), h('span', {class: 'dim'}, '· ' + TOPIC.name + ' · ' + CONF_PCT + '%'),
@@ -1515,8 +1625,9 @@ button:disabled{cursor:default}
     }
 
     function onSendError(e) {
-      warn('ошибка скрипта в «Отправить»: ' + (e && e.message ? e.message : e));
-      if (S.phase === 'sending') {
+      S.busy = false;
+      warn('ошибка скрипта при вставке или отправке: ' + (e && e.message ? e.message : e));
+      if (S.phase === 'sending' || S.phase === 'inserting') {
         S.phase = 'inserted';
         S.notice = {cls: 'bad', title: 'Ошибка скрипта при отправке', text: 'Проверьте поле ответа и отправьте сами. Подробности - в консоли.'};
         render();
@@ -1533,10 +1644,10 @@ button:disabled{cursor:default}
           case 'fold': toggleFold(k); break;
           case 'refresh': actRefresh(); break;
           case 'send': actSend(false).catch(onSendError); break;
-          case 'edit': actEdit(false); break;
-          case 'confirm-yes': if (S.confirmFor === 'send') actSend(true).catch(onSendError); else actEdit(true); break;
+          case 'edit': actEdit(false).catch(onSendError); break;
+          case 'confirm-yes': if (S.confirmFor === 'send') actSend(true).catch(onSendError); else actEdit(true).catch(onSendError); break;
           case 'confirm-no': S.phase = 'idle'; S.confirmFor = null; render(); break;
-          case 'undo': actUndo(); break;
+          case 'undo': actUndo().catch(onSendError); break;
           case 'flag': S.flags[k] = !S.flags[k]; log('флажок «неверный факт»: ' + k + (S.flags[k] ? ' вкл' : ' выкл')); render(); break;
           case 'bad-open': S.badOpen = !S.badOpen; render(); break;
           case 'bad': S.bad = k; S.badOpen = false; log('отзыв «Плохо»: ' + k); render(); break;
