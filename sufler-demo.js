@@ -38,7 +38,7 @@
   }
 
   function start() {
-    const VERSION = '2026-11-18.8';
+    const VERSION = '2026-11-18.9';
     const LAYOUT_KEY = 'csai_demo_layout';
     const SEND_KEY = 'csai_demo_send_cases';
     const STATE_KEY = 'csai_demo_state';
@@ -58,7 +58,7 @@
     const TOPIC = {name: 'Ссылка на занятие', sub: 'Математика · завтра', tpl: 'Ссылка на занятие', check: 'дата и время сверены'};
     const DRAFT = [
       'Здравствуйте, Анна! Занятие по ', {v: 'математике', what: 'Предмет занятия', src: SLOTS},
-      ' завтра, ', {v: '19 ноября', what: 'Дата занятия', src: SLOTS},
+      ' завтра, ', {v: '19 ноября', what: 'Дата занятия', src: SLOTS, warn: true, note: 'на неделе 2 занятия - выбрано ближайшее, сверьте дату'},
       ', в ', {v: '18:00 МСК', what: 'Время занятия', src: SLOTS},
       '. Ссылку на подключение найдете в личном кабинете в расписании: ',
       {v: 'lk.umschool.one/schedule', what: 'Раздел ЛК «Расписание»', src: 'шаблон КС'},
@@ -73,6 +73,13 @@
       ['warn', 'на неделе 2 занятия - выбрано ближайшее', 0],
     ];
     const CONF_PCT = CONF.reduce((a, c) => a + c[2], 0);
+    // ID ответа (request_id): у каждой подсказки свой, приходит с ответом сервиса. В демо первый - фиксированный, при пересборке - новый.
+    const FIRST_RID = 'r-7f3a2c';
+    function newRid() {
+      let t = '';
+      for (let i = 0; i < 6; i++) t += '0123456789abcdef'[Math.floor(Math.random() * 16)];
+      return 'r-' + t;
+    }
     const FACTS = [
       {k: 'lesson', l: 'Занятие', v: 'Математика, чт 19.11, 18:00 МСК', m: SLOTS, url: 'https://platform.example/admin/lessons/5000001'},
       {k: 'prods', l: 'Продукты', v: '2 активных', m: PLAT, url: 'https://platform.example/admin/customers/1000001/products'},
@@ -103,7 +110,7 @@
         caseId: null, collapsed: false,
         open: Object.assign({}, OPEN_DEFAULT, {diag: !!keepDiag}),
         mode: 'ready', // ready | noid | rebuilding
-        idBase: null, rebuildHow: '', clickedAt: 0, busy: false,
+        idBase: null, rebuildHow: '', clickedAt: 0, busy: false, rid: FIRST_RID, ridShown: '',
         phase: 'idle', // idle | confirm | inserting | inserted | sending | sent
         confirmFor: null, notice: null, prev: null, insertedFor: null,
         sent: null, bad: null, badOpen: false, flags: {}, tok: 0,
@@ -897,7 +904,7 @@
         + ' · ' + (r.ok ? 'поле видит текст ✓ (' + norm(edRead(ed)).length + ' знаков)' : 'текст в поле не принят ✗')
         + (r.srcNote ? ' · ' + r.srcNote : '');
       if (r.ok) {
-        log('вставка (' + label + '): ок, ' + (r.focus ? r.focus + ', ' : '') + 'способ: ' + r.steps.join(' → '));
+        log('вставка (' + label + '): ок, ID ответа ' + S.rid + ', ' + (r.focus ? r.focus + ', ' : '') + 'способ: ' + r.steps.join(' → '));
       } else {
         warn('вставка (' + label + ') не принята редактором: ожидалось ' + norm(DRAFT_TEXT).length + ' знаков, в поле '
           + norm(edRead(ed)).length + '; поле ' + describe(ed.el) + (r.focus ? '; ' + r.focus : '') + '; шаги: ' + (r.steps.join(' → ') || 'нет')
@@ -1062,7 +1069,7 @@
       S.phase = 'sent';
       S.notice = null;
       S.sent = {time: hhmm(), edit: editLabel(text, DRAFT_TEXT), how};
-      log('отправлено через ' + how + ', ' + S.sent.edit);
+      log('отправлено через ' + how + ', ' + S.sent.edit + ', ID ответа ' + S.rid);
       render();
       const tok = S.tok;
       setTimeout(() => {
@@ -1266,6 +1273,12 @@ button:disabled{cursor:default}
 .sub{background:rgba(138,146,255,.2);border-bottom:1px dotted #a3a9ff;border-radius:2px;padding:0 2px;cursor:help;color:#fff}
 .sub:hover,.sub:focus{background:rgba(138,146,255,.34);outline:none}
 .sub.warn{background:rgba(242,198,92,.16);border-bottom-color:#e0b040}
+.sub.warn:hover,.sub.warn:focus{background:rgba(242,198,92,.28)}
+.cwarn{list-style:none;margin:2px 0 7px;padding:0;font-size:11.5px;line-height:1.35;color:var(--warn)}
+.cwarn li{display:flex;gap:5px;align-items:flex-start}
+.cwarn .ico{width:13px;height:13px;flex:none;margin-top:1px}
+.conf.open .cwarn{display:none}
+.rid-b{border:0;background:none;color:#a3a9ff;font:inherit;padding:0;cursor:pointer;text-decoration:underline dotted}
 .draft-foot{margin-top:7px;font-size:11px;color:#8e8e8e}
 .c-ok{color:var(--ok)}
 .draft.sent{opacity:.7}
@@ -1333,6 +1346,9 @@ button:disabled{cursor:default}
 .light .skel i{background:linear-gradient(90deg,#eee 0%,#f7f7f7 50%,#eee 100%);background-size:200% 100%}
 .light .sub{background:rgba(90,99,222,.12);border-bottom-color:#8a92ff;color:#1d1f4d}
 .light .sub:hover,.light .sub:focus{background:rgba(90,99,222,.22)}
+.light .sub.warn{background:#fff1c7;border-bottom-color:#d9a400;color:#4d3800}
+.light .sub.warn:hover,.light .sub.warn:focus{background:#ffe79e}
+.light .rid-b{color:#4a52c9}
 .light .sent-line span{color:#777}
 .light .fold{border-top-color:#e6e6ea}
 .light .fold-h{color:#333}
@@ -1510,15 +1526,22 @@ button:disabled{cursor:default}
           h('span', {class: 'tname', title: TOPIC.name + ' · ' + TOPIC.sub}, TOPIC.name),
           h('button', {class: 'tconf', type: 'button', 'data-act': 'fold', 'data-k': 'conf', 'aria-expanded': String(o),
             title: 'Из чего сложилась уверенность'}, h('span', null, 'уверенность'), h('b', null, CONF_PCT + '%'))),
+        // Неуверенность видна без клика; при раскрытой расшифровке строка прячется, чтобы не дублировать.
+        CONF_PCT < 100 ? h('ul', {class: 'cwarn'}, CONF.filter(c => c[0] === 'warn').map(c => h('li', null, icon('warn'), h('span', null, c[1])))) : null,
         h('div', {class: 'reveal' + (o ? ' open' : '')}, h('div', {class: 'reveal-in'}, h('div', {class: 'cbd'}, list))));
     }
     function draftBox() {
       const parts = DRAFT.map(p => {
         if (typeof p === 'string') return p;
-        return h('span', {class: 'sub', tabindex: '0', title: p.what + ' · ' + p.src}, p.v);
+        return h('span', {class: 'sub' + (p.warn ? ' warn' : ''), tabindex: '0',
+          title: p.what + ' · ' + p.src + (p.note ? ' - ' + p.note : '')}, p.v);
       });
       return h('div', {class: 'draft'}, h('div', {class: 'draft-text'}, parts),
-        h('div', {class: 'draft-foot'}, 'Шаблон КС «' + TOPIC.tpl + '» · ', h('span', {class: 'c-ok'}, '✓ ' + TOPIC.check)));
+        h('div', {class: 'draft-foot'}, 'Шаблон КС «' + TOPIC.tpl + '» · ', h('span', {class: 'c-ok'}, '✓ ' + TOPIC.check), ' ', ridNode()));
+    }
+    function ridNode() {
+      return h('span', {class: 'rid'}, '· ID ответа ', h('button', {class: 'rid-b', type: 'button', 'data-act': 'copy-rid',
+        title: 'Скопировать ID ответа - приложите его к обратной связи'}, S.rid));
     }
     function confirmRow(compact) {
       const q = 'В поле ответа уже есть текст. Заменить?';
@@ -1570,12 +1593,12 @@ button:disabled{cursor:default}
       let inner;
       if (S.bad) {
         inner = h('div', {class: 'fb-done'}, icon('check'),
-          h('span', null, 'Отмечено: ' + S.bad + '. В демо отзыв никуда не отправляется.'),
+          h('span', null, 'Отмечено: ' + S.bad + '. Отзыв ушёл с ID ответа ' + S.rid + ' (в демо - только в консоль).'),
           h('button', {class: 'lnk', type: 'button', 'data-act': 'unbad'}, 'Отменить'));
       } else {
         inner = [h('div', {class: 'fb-row'},
           h('button', {class: 'btn sm', type: 'button', 'data-act': 'bad-open', 'aria-expanded': String(S.badOpen)}, icon('thumb'), 'Плохо', icon('chevDown')),
-          h('span', {class: 'fb-hint'}, 'или ', icon('flag'), ' у строки в «Из платформы»')),
+          h('span', {class: 'fb-hint'}, 'или ', icon('flag'), ' у строки в «Из платформы» · ID ответа ' + S.rid + ' приложится сам')),
         S.badOpen ? h('div', {class: 'fb-reasons'}, BAD.map(b => h('button', {class: 'btn xs', type: 'button', 'data-act': 'bad', 'data-k': b}, b))) : null];
       }
       return fold('fb', 'Отзыв', inner, S.bad ? 'отмечено' : '');
@@ -1599,6 +1622,7 @@ button:disabled{cursor:default}
       return [
         ['Версия', VERSION + ' · запущен ' + D.started],
         ['Обращение', D.caseId + (D.caseSrc ? ' (' + D.caseSrc + ')' : '')],
+        ['ID ответа', S.mode === 'ready' ? S.rid : 'нет - подсказка не собрана'],
         ['Вариант', D.layout === '1' ? '1 - кнопки в карточке, без полосы' : '2 - карточка и полоса над полем ответа'],
         ['Состояние', modeLabel()],
         ['Отправка', (allowed.ok ? 'разрешена: ' : 'выключена: ') + allowed.why + ' · список ' + (sl.err ? sl.err : '[' + sl.list.join(', ') + ']')],
@@ -1670,7 +1694,7 @@ button:disabled{cursor:default}
       if (S.phase === 'sent') {
         out.push(h('div', {class: 'sent-line'}, icon('check'), h('b', null, 'Отправлено ' + S.sent.time), h('span', null, '· ' + S.sent.edit)));
         out.push(h('div', {class: 'draft sent'}, h('div', {class: 'draft-text'}, DRAFT_TEXT),
-          h('div', {class: 'draft-foot'}, 'Ушло через ' + S.sent.how + ' · демо')));
+          h('div', {class: 'draft-foot'}, 'Ушло через ' + S.sent.how + ' · демо ', ridNode())));
         out.push(factsFold(), whyFold(WHY), fbFold(), diagFold());
         return out;
       }
@@ -1801,6 +1825,22 @@ button:disabled{cursor:default}
       } catch (e) { /* запасной путь */ }
       done(fallbackCopy(text));
     }
+    function copyRid(btn) {
+      const id = S.rid;
+      const done = ok => {
+        if (ok) log('ID ответа скопирован: ' + id);
+        else warn('скопировать ID ответа в буфер не удалось: ' + id);
+        btn.textContent = ok ? 'скопировано' : id;
+        setTimeout(() => { if (btn.isConnected) btn.textContent = S.rid; }, 1200);
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(id).then(() => done(true), () => done(fallbackCopy(id)));
+          return;
+        }
+      } catch (e) { /* запасной путь */ }
+      done(fallbackCopy(id));
+    }
     function fallbackCopy(text) {
       try {
         const ta = document.createElement('textarea');
@@ -1841,7 +1881,8 @@ button:disabled{cursor:default}
           case 'undo': actUndo().catch(onSendError); break;
           case 'flag': S.flags[k] = !S.flags[k]; log('флажок «неверный факт»: ' + k + (S.flags[k] ? ' вкл' : ' выкл')); render(); break;
           case 'bad-open': S.badOpen = !S.badOpen; render(); break;
-          case 'bad': S.bad = k; S.badOpen = false; log('отзыв «Плохо»: ' + k); render(); break;
+          case 'bad': S.bad = k; S.badOpen = false; log('отзыв «Плохо»: ' + k + ', ID ответа ' + S.rid); render(); break;
+          case 'copy-rid': copyRid(t); break;
           case 'unbad': S.bad = null; render(); break;
           case 'refind': R.findAt = 0; refindReply(true); ensureAll(true, true); log('поиск заново по кнопке'); render(); break;
           case 'copy': copyDiag(); break;
@@ -1929,7 +1970,9 @@ button:disabled{cursor:default}
       setTimeout(() => {
         if (tok !== S.tok || S.mode !== 'rebuilding') return;
         S.mode = 'ready';
-        log('подсказка пересобрана: тема «' + TOPIC.name + '», ' + CONF_PCT + '%');
+        S.rid = newRid();
+        log('подсказка пересобрана: тема «' + TOPIC.name + '», ' + CONF_PCT + '%, новый ID ответа ' + S.rid);
+        S.ridShown = S.rid;
         render();
       }, RM ? 0 : REBUILD_MS);
     }
@@ -1950,10 +1993,15 @@ button:disabled{cursor:default}
       warn('«Обновить»: поле «ID Умскул» ' + describe(f.value || f.row) + ' пустое - подсказку не пересобираю');
       render();
     }
+    function announce() {
+      if (S.mode !== 'ready' || S.ridShown === S.rid) return;
+      S.ridShown = S.rid;
+      log('подсказка показана: тема «' + TOPIC.name + '», ' + CONF_PCT + '%, ID ответа ' + S.rid);
+    }
     function startMode() {
       S.mode = noidWanted() ? 'noid' : 'ready';
       D.idField = S.mode === 'noid' ? 'ещё не проверяли' : 'не проверяется - нет csai_demo_state=noid';
-      if (S.mode !== 'noid') return;
+      if (S.mode !== 'noid') { announce(); return; }
       log('режим «Нет ID Умскул» (csai_demo_state=noid): жду заполнения поля «ID Умскул»');
       checkId('открытие обращения');
     }
