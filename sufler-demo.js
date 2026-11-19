@@ -38,7 +38,7 @@
   }
 
   function start() {
-    const VERSION = '2026-11-18.9';
+    const VERSION = '2026-11-19.1';
     const LAYOUT_KEY = 'csai_demo_layout';
     const SEND_KEY = 'csai_demo_send_cases';
     const STATE_KEY = 'csai_demo_state';
@@ -113,7 +113,7 @@
         idBase: null, rebuildHow: '', clickedAt: 0, busy: false, rid: FIRST_RID, ridShown: '',
         phase: 'idle', // idle | confirm | inserting | inserted | sending | sent
         confirmFor: null, notice: null, prev: null, insertedFor: null,
-        sent: null, bad: null, badOpen: false, flags: {}, tok: 0,
+        sent: null, bad: null, flags: {}, tok: 0,
       };
     }
     function resetState() {
@@ -1124,6 +1124,7 @@
       if (e.target === b || (e.target instanceof Node && b.contains(e.target))) watchNativeSend('штатную кнопку Omnidesk');
     }
     function onDocKey(e) {
+      if (e.key === 'Escape') { closePop(); hideTip(); }
       if (!e.isTrusted || S.phase !== 'inserted' || !R.editor) return;
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target instanceof Node && R.editor.el.contains(e.target)) {
         watchNativeSend('Ctrl+Enter');
@@ -1316,7 +1317,27 @@ button:disabled{cursor:default}
 .fb-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .fb-hint{font-size:11px;color:#8e8e8e;display:inline-flex;align-items:center;gap:3px}
 .fb-hint .ico{width:11px;height:11px}
-.fb-reasons{display:flex;flex-wrap:wrap;gap:4px;margin-top:7px}
+.tip{position:fixed;left:0;top:0;z-index:2147483000;max-width:240px;background:#f2f2f2;color:#1b1b1b;border-radius:5px;padding:6px 9px;
+  font-size:11.5px;line-height:1.4;pointer-events:none;opacity:0;transform:translateY(4px);transition:opacity .15s,transform .15s;
+  box-shadow:0 6px 20px rgba(0,0,0,.5)}
+.tip.open{opacity:1;transform:none}
+.tip b{display:block;font-weight:700}
+.tip span{display:block;color:#555}
+.tip em{display:block;font-style:normal;color:#8a5a00;margin-top:2px}
+.tip.light{background:#2b2b2b;color:#f2f2f2;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+.tip.light span{color:#bdbdbd}
+.tip.light em{color:#f2c65c}
+.pop{position:fixed;left:0;top:0;z-index:2147483000;min-width:210px;background:#2a2a2a;border:1px solid #3e3e3e;border-radius:6px;
+  box-shadow:0 12px 32px rgba(0,0,0,.55);padding:5px;opacity:0;visibility:hidden;transform:translateY(-4px);
+  transition:opacity .15s,transform .15s,visibility 0s linear .15s}
+.pop.open{opacity:1;visibility:visible;transform:none;transition:opacity .15s,transform .15s,visibility 0s}
+.pop-t{font-size:10.5px;color:#9a9a9a;padding:4px 8px 5px;text-transform:uppercase;letter-spacing:.04em}
+.pop-i{display:block;width:100%;text-align:left;border:0;background:none;padding:6px 8px;border-radius:4px;font-size:12.5px;color:#ececec}
+.pop-i:hover,.pop-i:focus-visible{background:#363636;outline:none}
+.pop.light{background:#fff;border-color:#dcdce2;box-shadow:0 12px 32px rgba(0,0,0,.15)}
+.pop.light .pop-t{color:#888}
+.pop.light .pop-i{color:#222}
+.pop.light .pop-i:hover,.pop.light .pop-i:focus-visible{background:#f0f0f3}
 .fb-done{display:flex;align-items:flex-start;gap:6px;font-size:11.5px;color:#d6d6d6;background:#1b1b1b;border-radius:5px;padding:6px 8px}
 .fb-done>.ico{color:var(--ok);margin-top:1px;width:13px;height:13px;stroke-width:2.2}
 .fb-done span{flex:1}
@@ -1468,7 +1489,19 @@ button:disabled{cursor:default}
         h('div', {class: 'hc-top', 'data-act': 'toggle'}, h('div', {class: 'hc-layers'}, full, mini), tg), reveal);
       cardWrap = h('div', {class: 'wrap'}, card);
       cardRoot.appendChild(cardWrap);
-      cardEls = {full, mini, tg, body, reveal, card};
+      // Подсказка у подставленных значений и меню «Что не так» - как в макете, поверх страницы.
+      const tip = h('div', {class: 'tip', role: 'tooltip'});
+      const pop = h('div', {class: 'pop', role: 'menu'});
+      cardRoot.appendChild(tip);
+      cardRoot.appendChild(pop);
+      cardEls = {full, mini, tg, body, reveal, card, tip, pop, popAnchor: null, tipFor: null};
+      cardRoot.addEventListener('mouseover', e => { const sb = e.target.closest && e.target.closest('.sub'); if (sb) showTip(sb); });
+      cardRoot.addEventListener('mouseout', e => {
+        const sb = e.target.closest && e.target.closest('.sub');
+        if (sb && !(e.relatedTarget && sb.contains(e.relatedTarget))) hideTip();
+      });
+      cardRoot.addEventListener('focusin', e => { if (e.target.classList && e.target.classList.contains('sub')) showTip(e.target); });
+      cardRoot.addEventListener('focusout', e => { if (e.target.classList && e.target.classList.contains('sub')) hideTip(); });
     }
     function createStrip() {
       const m = makeHost('csai-demo-strip');
@@ -1533,8 +1566,8 @@ button:disabled{cursor:default}
     function draftBox() {
       const parts = DRAFT.map(p => {
         if (typeof p === 'string') return p;
-        return h('span', {class: 'sub' + (p.warn ? ' warn' : ''), tabindex: '0',
-          title: p.what + ' · ' + p.src + (p.note ? ' - ' + p.note : '')}, p.v);
+        return h('span', {class: 'sub' + (p.warn ? ' warn' : ''), tabindex: '0', 'data-what': p.what, 'data-src': p.src,
+          'data-note': p.note || null, 'aria-label': p.v + ': ' + p.what + ', ' + p.src + (p.note ? ', ' + p.note : '')}, p.v);
       });
       return h('div', {class: 'draft'}, h('div', {class: 'draft-text'}, parts),
         h('div', {class: 'draft-foot'}, 'Шаблон КС «' + TOPIC.tpl + '» · ', h('span', {class: 'c-ok'}, '✓ ' + TOPIC.check), ' ', ridNode()));
@@ -1597,9 +1630,8 @@ button:disabled{cursor:default}
           h('button', {class: 'lnk', type: 'button', 'data-act': 'unbad'}, 'Отменить'));
       } else {
         inner = [h('div', {class: 'fb-row'},
-          h('button', {class: 'btn sm', type: 'button', 'data-act': 'bad-open', 'aria-expanded': String(S.badOpen)}, icon('thumb'), 'Плохо', icon('chevDown')),
-          h('span', {class: 'fb-hint'}, 'или ', icon('flag'), ' у строки в «Из платформы» · ID ответа ' + S.rid + ' приложится сам')),
-        S.badOpen ? h('div', {class: 'fb-reasons'}, BAD.map(b => h('button', {class: 'btn xs', type: 'button', 'data-act': 'bad', 'data-k': b}, b))) : null];
+          h('button', {class: 'btn sm', type: 'button', 'data-act': 'bad-open', 'aria-haspopup': 'menu', 'aria-expanded': 'false'}, icon('thumb'), 'Плохо', icon('chevDown')),
+          h('span', {class: 'fb-hint'}, 'или ', icon('flag'), ' у строки в «Из платформы» · ID ответа ' + S.rid + ' приложится сам'))];
       }
       return fold('fb', 'Отзыв', inner, S.bad ? 'отмечено' : '');
     }
@@ -1724,9 +1756,66 @@ button:disabled{cursor:default}
       el._csaiT = setTimeout(() => { el.style.height = ''; el.style.overflow = ''; el.style.transition = ''; }, 400);
     }
 
+    function showTip(sb) {
+      const e = cardEls;
+      if (!e || e.tipFor === sb) return;
+      e.tipFor = sb;
+      setKids(e.tip, [h('b', null, sb.getAttribute('data-what') || ''), h('span', null, sb.getAttribute('data-src') || ''),
+        sb.getAttribute('data-note') ? h('em', null, sb.getAttribute('data-note')) : null]);
+      e.tip.classList.add('open');
+      const r = sb.getClientRects()[0] || sb.getBoundingClientRect();
+      const tw = e.tip.offsetWidth, th = e.tip.offsetHeight;
+      const left = Math.max(8, Math.min(r.left + r.width / 2 - tw / 2, window.innerWidth - tw - 8));
+      let top = r.top - th - 8;
+      if (top < 8) top = r.bottom + 8;
+      e.tip.style.left = left + 'px';
+      e.tip.style.top = top + 'px';
+    }
+    function hideTip() {
+      if (!cardEls) return;
+      cardEls.tip.classList.remove('open');
+      cardEls.tipFor = null;
+    }
+    function openPop(anchor, kids) {
+      const e = cardEls;
+      if (!e) return;
+      if (e.popAnchor === anchor) { closePop(); return; }
+      closePop();
+      setKids(e.pop, kids);
+      e.pop.classList.add('open');
+      e.popAnchor = anchor;
+      anchor.setAttribute('aria-expanded', 'true');
+      const r = anchor.getBoundingClientRect();
+      const pw = e.pop.offsetWidth, ph = e.pop.offsetHeight;
+      const left = Math.max(8, Math.min(r.left, window.innerWidth - pw - 8));
+      let top = r.bottom + 6;
+      if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
+      e.pop.style.left = left + 'px';
+      e.pop.style.top = top + 'px';
+    }
+    function closePop() {
+      const e = cardEls;
+      if (!e || !e.popAnchor) return;
+      e.pop.classList.remove('open');
+      if (e.popAnchor.isConnected) e.popAnchor.setAttribute('aria-expanded', 'false');
+      e.popAnchor = null;
+    }
+    // Клик мимо меню, прокрутка, Esc - закрыть меню и подсказку.
+    function onOutside(e) {
+      const c = cardEls;
+      if (!c || !c.popAnchor) return;
+      const path = e.composedPath ? e.composedPath() : [];
+      if (path.indexOf(c.pop) < 0 && path.indexOf(c.popAnchor) < 0) closePop();
+    }
+    function onAnyScroll(e) {
+      if (cardEls && e.target !== cardEls.pop) { closePop(); hideTip(); }
+    }
+
     function renderCard() {
       if (!cardEls) return;
       const e = cardEls;
+      closePop();
+      hideTip();
       e.card.classList.toggle('collapsed', S.collapsed);
       cardWrap.classList.toggle('float', M.cardFloat);
       const light = cardIsLight();
@@ -1735,6 +1824,8 @@ button:disabled{cursor:default}
         D.theme = light ? 'светлая (тёмный текст в колонке)' : 'тёмная';
       }
       cardWrap.classList.toggle('light', light);
+      e.tip.classList.toggle('light', light);
+      e.pop.classList.toggle('light', light);
       setKids(e.full, [icon('spark'), h('div', {class: 'hc-tt'}, h('b', null, 'Подсказка ответа'), h('small', null, 'текст КС · данные платформы')),
         h('span', {class: 'demo', title: 'Демо на тестовых данных'}, 'демо')]);
       setKids(e.mini, [icon('spark'), h('span', {class: 'mini-t'}, miniLine())]);
@@ -1793,6 +1884,8 @@ button:disabled{cursor:default}
     }
 
     function setCollapsed(c) {
+      closePop();
+      hideTip();
       S.collapsed = c;
       if (!cardEls) return;
       cardEls.card.classList.toggle('collapsed', c);
@@ -1802,6 +1895,8 @@ button:disabled{cursor:default}
       if (!c) render();
     }
     function toggleFold(k) {
+      closePop();
+      hideTip();
       S.open[k] = !S.open[k];
       [cardRoot, stripRoot].forEach(root => {
         if (!root) return;
@@ -1880,8 +1975,9 @@ button:disabled{cursor:default}
           case 'confirm-no': S.phase = 'idle'; S.confirmFor = null; render(); break;
           case 'undo': actUndo().catch(onSendError); break;
           case 'flag': S.flags[k] = !S.flags[k]; log('флажок «неверный факт»: ' + k + (S.flags[k] ? ' вкл' : ' выкл')); render(); break;
-          case 'bad-open': S.badOpen = !S.badOpen; render(); break;
-          case 'bad': S.bad = k; S.badOpen = false; log('отзыв «Плохо»: ' + k + ', ID ответа ' + S.rid); render(); break;
+          case 'bad-open': openPop(t, [h('div', {class: 'pop-t'}, 'Что не так'),
+            BAD.map(b => h('button', {class: 'pop-i', type: 'button', role: 'menuitem', 'data-act': 'bad', 'data-k': b}, b.charAt(0).toUpperCase() + b.slice(1)))]); break;
+          case 'bad': closePop(); S.bad = k; log('отзыв «Плохо»: ' + k + ', ID ответа ' + S.rid); render(); break;
           case 'copy-rid': copyRid(t); break;
           case 'unbad': S.bad = null; render(); break;
           case 'refind': R.findAt = 0; refindReply(true); ensureAll(true, true); log('поиск заново по кнопке'); render(); break;
@@ -2205,6 +2301,9 @@ button:disabled{cursor:default}
       mo.disconnect();
       document.removeEventListener('click', onDocClick, true);
       document.removeEventListener('keydown', onDocKey, true);
+      document.removeEventListener('pointerdown', onOutside, true);
+      document.removeEventListener('scroll', onAnyScroll, true);
+      window.removeEventListener('resize', onAnyScroll);
       document.removeEventListener('input', onDocInput, true);
       document.removeEventListener('securitypolicyviolation', onCsp);
       window.removeEventListener('error', onGlobalError);
@@ -2232,6 +2331,9 @@ button:disabled{cursor:default}
       log('запущен, версия ' + VERSION + ', вариант ' + D.layout);
       document.addEventListener('click', onDocClick, true);
       document.addEventListener('keydown', onDocKey, true);
+      document.addEventListener('pointerdown', onOutside, true);
+      document.addEventListener('scroll', onAnyScroll, true);
+      window.addEventListener('resize', onAnyScroll);
       document.addEventListener('securitypolicyviolation', onCsp);
       window.addEventListener('error', onGlobalError);
       window.addEventListener('unhandledrejection', onRejection);
